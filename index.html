@@ -361,6 +361,8 @@ a { color: var(--accent); text-decoration: none; }
    ============================================================ */
 @media (max-width: 959px) {
   .app-shell { display: block; }
+  .sync-pill { padding: 8px 12px; }
+  .sync-pill-txt { display: none; }
   .sidebar { display: none; }
   .detail-panel { display: none; }
 
@@ -680,6 +682,18 @@ a { color: var(--accent); text-decoration: none; }
 .icon-btn:hover { background: var(--accent-soft); }
 .icon-btn:active { transform: scale(0.92); }
 .sync-btn.spinning { animation: spin 0.9s linear infinite; }
+.sync-pill {
+  display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), rgba(var(--accent-rgb),0.82));
+  color: #fff; font-size: 0.82rem; font-weight: 650; letter-spacing: -0.01em;
+  box-shadow: 0 4px 14px rgba(var(--accent-rgb),0.35), inset 0 1px 0 rgba(255,255,255,0.3);
+  border: 1px solid rgba(255,255,255,0.2);
+  transition: transform var(--t-fast), box-shadow var(--t-fast);
+}
+.sync-pill:hover { transform: scale(1.04); box-shadow: 0 6px 18px rgba(var(--accent-rgb),0.45), inset 0 1px 0 rgba(255,255,255,0.3); }
+.sync-pill:active { transform: scale(0.96); }
+.sync-pill.spinning .sync-pill-ico { animation: spin 0.9s linear infinite; }
+.sync-pill.done { background: linear-gradient(180deg, var(--ok), #2ab74d); }
 .sync-btn.done { color: var(--ok); transform: scale(1.15); transition: transform 0.3s var(--t-spring); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -762,7 +776,7 @@ a { color: var(--accent); text-decoration: none; }
       <div class="topbar-title">生活看板 <em id="topCatName">· 相册</em></div>
       <div class="topbar-actions">
         <span class="sync-dot" id="syncDotM" title="同步状态"></span>
-        <button class="icon-btn sync-btn" id="syncBtnM" title="一键同步" onclick="manualSync()">↻</button>
+        <button class="sync-pill" id="syncBtnM" title="一键同步（推送+拉取云端）" onclick="manualSync()"><span class="sync-pill-ico">⟳</span><span class="sync-pill-txt">同步</span></button>
         <button class="icon-btn" id="menuBtn" title="菜单" onclick="openContextMenu()">⋯</button>
       </div>
     </header>
@@ -882,6 +896,7 @@ a { color: var(--accent); text-decoration: none; }
   <button class="context-item" onclick="viewGuestbook()"><span>📋</span>留言板</button>
   <button class="context-item" onclick="openTokenModal()"><span>🔑</span>同步设置</button>
   <div class="context-divider"></div>
+  <button class="context-item" onclick="pullOnly()"><span>⬇️</span>一键同步至本地（拉取云端）</button>
   <button class="context-item" onclick="backupData()"><span>💾</span>备份到本地</button>
   <button class="context-item" onclick="triggerImport()"><span>📥</span>导入备份</button>
   <input type="file" id="importFileInput" accept=".json" style="display:none" onchange="importBackup(event)">
@@ -1049,15 +1064,22 @@ function manualSync() {
   const spinning = btns.some(function(b) { return b && b.classList.contains('spinning'); });
   if (spinning) return;
   btns.forEach(function(b) { if (b) b.classList.add('spinning'); });
+  if (!GITHUB_TOKEN) {
+    btns.forEach(function(b) { if (b) b.classList.remove('spinning'); });
+    showToast('⚠️ 未设置 Token，请先点 ⋯ → 同步设置');
+    openTokenModal();
+    return;
+  }
   syncToCloud().then(function(ok) {
-    return loadFromCloud().then(function() { renderAll(); return ok; });
+    return loadFromCloud().then(function() { renderAll(); refreshOpenAlbumGrid(); return ok; });
   }).then(function(ok) {
     btns.forEach(function(b) { if (b) { b.classList.remove('spinning'); b.classList.add('done'); setTimeout(function(){ b.classList.remove('done'); }, 1600); } });
-    showToast(ok ? '同步完成 ✓ 已拉取最新数据' : '同步未完成，可能正在同步或网络异常');
+    showToast(ok ? '✅ 同步完成 ✓ 已推送并拉取最新数据' : '❌ 同步失败：请检查 Token 权限（需 Contents 读写）和网络');
   });
 }
 
 function pullOnly() {
+  if (!GITHUB_TOKEN) { showToast('⚠️ 未设置 Token，请先点 ⋯ → 同步设置'); openTokenModal(); return; }
   const btn = document.getElementById('adPullBtn');
   if (btn) btn.classList.add('spinning');
   loadFromCloud().then(function(ok) {

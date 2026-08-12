@@ -1,5 +1,12 @@
 {
-  "albums": [],
+  "albums": [
+    {
+      "id": "msqdknit32acv7bs6",
+      "name": "宜宾",
+      "cover": null,
+      "items": []
+    }
+  ],
   "memos": [],
   "recipes": [],
   "guestbook": []

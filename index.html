@@ -617,6 +617,7 @@ a { color: var(--accent); text-decoration: none; }
         <button class="icon-btn sync-btn" id="syncBtn" title="一键同步" onclick="manualSync()">↻</button>
       </div>
       <button class="side-btn" onclick="openContextMenu()"><span>⋯</span> 更多选项</button>
+      <button class="side-btn" id="tokenBtn" onclick="openTokenModal()"><span>🔑</span> 同步设置</button>
       <div class="side-foot-note">大胖小子 · 小瘦大子</div>
     </div>
   </aside>
@@ -736,8 +737,11 @@ a { color: var(--accent); text-decoration: none; }
 // 数据引擎
 // ============================================================
 const STORAGE_KEY = 'lifeboard_data';
-const GIST_ID_KEY = 'lifeboard_gist_id';
-const GITHUB_TOKEN = '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';
+const CLOUD_SHA_KEY = 'lifeboard_cloud_sha';
+const SYNC_OWNER = 'wantaoxxx';
+const SYNC_REPO = 'lifeboard';
+const SYNC_FILE = 'lifeboard-data.json';
+let GITHUB_TOKEN = localStorage.getItem('lifeboard_github_token') || '';
 const SYNC_INTERVAL = 2000;
 
 let data = { albums: [], memos: [], recipes: [], guestbook: [] };
@@ -748,7 +752,7 @@ let selectedIds = new Set();
 let currentAlbumId = null;
 let currentPreviewIndex = 0;
 let currentPreviewItems = [];
-let gistId = localStorage.getItem(GIST_ID_KEY) || null;
+let cloudSha = localStorage.getItem(CLOUD_SHA_KEY) || null;
 let syncTimer = null;
 let isSyncing = false;
 
@@ -761,7 +765,7 @@ function uid() { return Date.now().toString(36) + Math.random().toString(36).sub
 loadData();
 
 // ============================================================
-// 云端同步（GitHub Gist）
+// 云端同步（GitHub Contents API）
 // ============================================================
 function updateSyncDot(state) {
   const dots = [document.getElementById('syncDot'), document.getElementById('syncDotM')];
@@ -778,32 +782,44 @@ function updateSyncDot(state) {
   }
 }
 
+function utf8ToBase64(str) {
+  return btoa(unescape(encodeURIComponent(str)));
+}
+
+function base64ToUtf8(b64) {
+  return decodeURIComponent(escape(atob(b64.replace(/\s/g, ''))));
+}
+
 async function syncToCloud() {
   if (isSyncing) return;
   isSyncing = true;
   updateSyncDot('syncing');
   try {
     const content = JSON.stringify(data, null, 2);
-    if (gistId) {
-      const resp = await fetch('https://api.github.com/gists/' + gistId, {
-        method: 'PATCH',
-        headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: { 'lifeboard-data.json': { content: content } } })
-      });
-      if (resp.status === 404) { gistId = null; localStorage.removeItem(GIST_ID_KEY); }
-      else if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const b64 = utf8ToBase64(content);
+    const url = 'https://api.github.com/repos/' + SYNC_OWNER + '/' + SYNC_REPO + '/contents/' + SYNC_FILE;
+    // Get current sha if we don't have it
+    let sha = cloudSha;
+    if (!sha) {
+      try {
+        const infoResp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Accept': 'application/vnd.github+json' } });
+        if (infoResp.ok) {
+          const info = await infoResp.json();
+          sha = info.sha;
+        }
+      } catch(e) {}
     }
-    if (!gistId) {
-      const resp = await fetch('https://api.github.com/gists', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description: 'LifeBoard 数据备份', public: false, files: { 'lifeboard-data.json': { content: content } } })
-      });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const result = await resp.json();
-      gistId = result.id;
-      localStorage.setItem(GIST_ID_KEY, gistId);
-    }
+    const body = { message: 'LifeBoard sync', content: b64, branch: 'main' };
+    if (sha) body.sha = sha;
+    const resp = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Content-Type': 'application/json', 'Accept': 'application/vnd.github+json' },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const result = await resp.json();
+    cloudSha = result.content ? result.content.sha : sha;
+    if (cloudSha) localStorage.setItem(CLOUD_SHA_KEY, cloudSha);
     updateSyncDot('ok');
     isSyncing = false;
     return true;
@@ -816,15 +832,16 @@ async function syncToCloud() {
 }
 
 async function loadFromCloud() {
-  if (!gistId) return;
   try {
-    const resp = await fetch('https://api.github.com/gists/' + gistId, { headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN } });
-    if (resp.status === 404) { gistId = null; localStorage.removeItem(GIST_ID_KEY); return; }
+    const url = 'https://api.github.com/repos/' + SYNC_OWNER + '/' + SYNC_REPO + '/contents/' + SYNC_FILE + '?ref=main';
+    const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Accept': 'application/vnd.github+json' } });
+    if (resp.status === 404) return;
     if (!resp.ok) return;
     const result = await resp.json();
-    const file = result.files['lifeboard-data.json'];
-    if (file && file.content) {
-      const cloudData = JSON.parse(file.content);
+    cloudSha = result.sha;
+    if (cloudSha) localStorage.setItem(CLOUD_SHA_KEY, cloudSha);
+    if (result.content) {
+      const cloudData = JSON.parse(base64ToUtf8(result.content));
       data = {
         albums: mergeArrays(cloudData.albums || [], data.albums),
         memos: mergeArrays(cloudData.memos || [], data.memos),
@@ -1649,6 +1666,70 @@ document.addEventListener('click', function(e) {
 });
 
 console.log('🦐 LifeBoard ready · 大胖小子 & 小瘦大子 · 同步已启动');
+
+// ============================================================
+// Token management (runtime, stored in localStorage)
+// ============================================================
+function openTokenModal() {
+  var input = document.getElementById('tokenInput');
+  if (input) input.value = localStorage.getItem('lifeboard_github_token') || '';
+  var modal = document.getElementById('tokenModal');
+  if (modal) { modal.style.display = 'flex'; }
+}
+
+function closeTokenModal() {
+  var modal = document.getElementById('tokenModal');
+  if (modal) { modal.style.display = 'none'; }
+}
+
+async function saveToken() {
+  var input = document.getElementById('tokenInput');
+  var raw = input ? input.value.trim() : '';
+  if (!raw) { showToast('请输入有效的 Token'); return; }
+  GITHUB_TOKEN = raw;
+  localStorage.setItem('lifeboard_github_token', raw);
+  closeTokenModal();
+  showToast('Token 已保存，正在验证…');
+  var ok = await testToken();
+  if (ok) {
+    showToast('Token 有效 ✓ 云端同步已就绪');
+    syncToCloud().then(function() { loadFromCloud().then(function() { renderAll(); }); });
+  } else {
+    showToast('Token 验证失败，请检查权限设置');
+    updateSyncDot('error');
+  }
+}
+
+async function testToken() {
+  try {
+    var resp = await fetch('https://api.github.com/user', { headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Accept': 'application/vnd.github+json' } });
+    return resp.ok;
+  } catch(e) { return false; }
+}
+
 </script>
+
+<!-- Token setup modal -->
+<div id="tokenModal" class="modal-overlay" style="display:none; z-index:9999; position:fixed; inset:0; align-items:center; justify-content:center; background:rgba(0,0,0,0.35); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);">
+  <div style="max-width:440px; width:90%; background:var(--bg-glass-heavy, rgba(255,255,255,0.92)); backdrop-filter:blur(24px) saturate(180%); -webkit-backdrop-filter:blur(24px) saturate(180%); border-radius:22px; border:1px solid var(--separator, rgba(60,60,67,0.12)); box-shadow:0 20px 60px rgba(0,0,0,0.18); overflow:hidden; transition:transform 0.3s cubic-bezier(0.34,1.56,0.64,1), opacity 0.2s;">
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:20px 24px 12px;">
+      <h3 style="margin:0; font-size:17px; font-weight:600; color:var(--text, #1c1c1e);">同步设置</h3>
+      <button style="border:none; background:none; font-size:22px; color:var(--text-secondary, #6e6e73); cursor:pointer; padding:4px 8px; border-radius:8px;" onclick="closeTokenModal()">&times;</button>
+    </div>
+    <div style="padding:0 24px 8px;">
+      <p style="margin:0 0 14px; color:var(--text-secondary, #6e6e73); font-size:13px; line-height:1.5;">输入 GitHub Personal Access Token 以启用云端同步。Token 仅保存在本机浏览器，不会上传到任何第三方。</p>
+      <input id="tokenInput" type="password" placeholder="github_pat_ 或 ghp_ 开头" style="width:100%; box-sizing:border-box; padding:12px 14px; border:1px solid var(--separator, rgba(60,60,67,0.12)); border-radius:12px; font-size:14px; font-family:inherit; background:rgba(255,255,255,0.6); color:var(--text, #1c1c1e); outline:none; transition:border-color 0.2s;" onfocus="this.style.borderColor='var(--accent, #0071e3)'" onblur="this.style.borderColor='var(--separator, rgba(60,60,67,0.12))'" oninput="this.value=this.value.trim()">
+      <div style="height:10px;"></div>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-secondary, #6e6e73); cursor:pointer;">
+        <input type="checkbox" id="showToken" onchange="document.getElementById('tokenInput').type = this.checked ? 'text' : 'password'"> 显示明文
+      </label>
+    </div>
+    <div style="display:flex; gap:10px; padding:12px 24px 20px;">
+      <button style="flex:1; padding:11px; border:none; border-radius:12px; font-size:14px; font-weight:500; font-family:inherit; cursor:pointer; background:rgba(120,120,128,0.12); color:var(--text, #1c1c1e); transition:transform 0.15s, background 0.2s;" onmouseover="this.style.background='rgba(120,120,128,0.18)'" onmouseout="this.style.background='rgba(120,120,128,0.12)'" onmousedown="this.style.transform='scale(0.96)'" onmouseup="this.style.transform='scale(1)'" onclick="closeTokenModal()">取消</button>
+      <button style="flex:1.5; padding:11px; border:none; border-radius:12px; font-size:14px; font-weight:600; font-family:inherit; cursor:pointer; background:var(--accent, #0071e3); color:#fff; transition:transform 0.15s, opacity 0.2s;" onmousedown="this.style.transform='scale(0.96)'" onmouseup="this.style.transform='scale(1)'" onclick="saveToken()">保存并测试</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

@@ -528,6 +528,17 @@ a { color: var(--accent); text-decoration: none; }
 }
 .ad-edit:hover { filter: brightness(1.08); transform: scale(1.02); }
 .ad-edit:active { transform: scale(0.97); }
+.ad-pull {
+  padding: 9px 14px; border-radius: 14px; font-size: 0.84rem; font-weight: 650;
+  background: linear-gradient(180deg, rgba(48,209,88,0.16) 0%, rgba(48,209,88,0.1) 100%);
+  color: var(--ok); border: 1px solid rgba(48,209,88,0.32);
+  box-shadow: 0 2px 6px rgba(48,209,88,0.12), inset 0 1px 0 rgba(255,255,255,0.5);
+  transition: all var(--t-fast); letter-spacing: -0.01em;
+}
+.ad-pull:hover { background: linear-gradient(180deg, rgba(48,209,88,0.26) 0%, rgba(48,209,88,0.16) 100%); transform: scale(1.02); }
+.ad-pull:active { transform: scale(0.97); }
+.ad-pull.spinning { animation: spin 0.9s linear infinite; }
+.ad-pull.done { color: #fff; background: linear-gradient(180deg, var(--ok), #2ab74d); }
 .ad-title {
   flex: 1; font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em;
   text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -842,6 +853,7 @@ a { color: var(--accent); text-decoration: none; }
     <div class="album-detail-top">
       <button class="ad-back" onclick="closeAlbum()">‹ 返回</button>
       <div class="ad-title" id="adTitle">相册</div>
+      <button class="ad-pull" id="adPullBtn" onclick="pullOnly()" title="一键拉取云端同步">⬇ 拉取</button>
       <button class="ad-edit" onclick="openAlbumModal(currentAlbumId)">✎ 编辑</button>
     </div>
     <div class="album-detail-body">
@@ -885,7 +897,7 @@ const SYNC_OWNER = 'wantaoxxx';
 const SYNC_REPO = 'lifeboard';
 const SYNC_FILE = 'lifeboard-data.json';
 let GITHUB_TOKEN = localStorage.getItem('lifeboard_github_token') || '';
-const SYNC_INTERVAL = 60000;
+const SYNC_INTERVAL = 10000;
 
 let data = { albums: [], memos: [], recipes: [], guestbook: [] };
 
@@ -912,7 +924,7 @@ function loadData() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) { try { data = JSON.parse(raw); } catch(e) {} }
 }
-function saveData() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error('Save error:', e); } scheduleSync(); }
+function saveData(skipSchedule) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error('Save error:', e); } if (!skipSchedule) scheduleSync(); }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).substr(2, 9); }
 loadData();
 
@@ -987,9 +999,11 @@ async function loadFromCloud() {
   try {
     const url = 'https://api.github.com/repos/' + SYNC_OWNER + '/' + SYNC_REPO + '/contents/' + SYNC_FILE + '?ref=main';
     const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Accept': 'application/vnd.github+json' } });
-    if (resp.status === 404) return;
-    if (!resp.ok) return;
+    if (resp.status === 404) return false;
+    if (!resp.ok) return false;
     const result = await resp.json();
+    // 云端 sha 与本地一致 -> 无新内容，跳过合并
+    if (result.sha && result.sha === cloudSha) return true;
     cloudSha = result.sha;
     if (cloudSha) localStorage.setItem(CLOUD_SHA_KEY, cloudSha);
     if (result.content) {
@@ -1000,9 +1014,11 @@ async function loadFromCloud() {
         recipes: mergeArrays(cloudData.recipes || [], data.recipes),
         guestbook: mergeArrays(cloudData.guestbook || [], data.guestbook)
       };
-      saveData();
+      saveData(true);
+      return true;
     }
-  } catch(e) { console.error('Load from cloud error:', e); }
+    return true;
+  } catch(e) { console.error('Load from cloud error:', e); return false; }
 }
 
 function mergeArrays(cloudArr, localArr) {
@@ -1014,10 +1030,18 @@ function mergeArrays(cloudArr, localArr) {
 
 function startSync() {
   // 定时拉取云端数据（合并别人添加的内容），推送由 scheduleSync 在数据变化时触发
-  syncTimer = setInterval(function() { loadFromCloud().then(function() { renderAll(); }); }, SYNC_INTERVAL);
-  loadFromCloud().then(function() { renderAll(); });
+  syncTimer = setInterval(function() { loadFromCloud().then(function() { renderAll(); refreshOpenAlbumGrid(); }); }, SYNC_INTERVAL);
+  loadFromCloud().then(function() { renderAll(); refreshOpenAlbumGrid(); });
   // 首次加载完成后立即推送一次本地数据
   setTimeout(function() { syncToCloud(); }, 4000);
+}
+
+function refreshOpenAlbumGrid() {
+  if (!currentAlbumId) return;
+  const grid = document.getElementById('albumItemsGrid');
+  if (!grid) return;
+  const album = data.albums.find(function(a) { return a.id === currentAlbumId; });
+  if (album) refreshAlbumGrid(album);
 }
 
 function manualSync() {
@@ -1030,6 +1054,20 @@ function manualSync() {
   }).then(function(ok) {
     btns.forEach(function(b) { if (b) { b.classList.remove('spinning'); b.classList.add('done'); setTimeout(function(){ b.classList.remove('done'); }, 1600); } });
     showToast(ok ? '同步完成 ✓ 已拉取最新数据' : '同步未完成，可能正在同步或网络异常');
+  });
+}
+
+function pullOnly() {
+  const btn = document.getElementById('adPullBtn');
+  if (btn) btn.classList.add('spinning');
+  loadFromCloud().then(function(ok) {
+    renderAll();
+    refreshOpenAlbumGrid();
+    if (btn) { btn.classList.remove('spinning'); btn.classList.add('done'); setTimeout(function(){ btn.classList.remove('done'); }, 1600); }
+    showToast(ok ? '已拉取云端最新数据 ✓' : '云端暂无更多数据');
+  }).catch(function() {
+    if (btn) btn.classList.remove('spinning');
+    showToast('拉取失败，请检查网络或同步设置');
   });
 }
 

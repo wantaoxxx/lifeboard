@@ -764,7 +764,7 @@ const SYNC_OWNER = 'wantaoxxx';
 const SYNC_REPO = 'lifeboard';
 const SYNC_FILE = 'lifeboard-data.json';
 let GITHUB_TOKEN = localStorage.getItem('lifeboard_github_token') || '';
-const SYNC_INTERVAL = 2000;
+const SYNC_INTERVAL = 60000;
 
 let data = { albums: [], memos: [], recipes: [], guestbook: [] };
 
@@ -777,12 +777,21 @@ let currentPreviewItems = [];
 let cloudSha = localStorage.getItem(CLOUD_SHA_KEY) || null;
 let syncTimer = null;
 let isSyncing = false;
+let dirty = false;
+let syncScheduled = false;
+function scheduleSync() {
+  dirty = true;
+  if (!syncScheduled) {
+    syncScheduled = true;
+    setTimeout(function() { syncScheduled = false; if (dirty) { dirty = false; syncToCloud(); } }, 3000);
+  }
+}
 
 function loadData() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) { try { data = JSON.parse(raw); } catch(e) {} }
 }
-function saveData() { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
+function saveData() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error('Save error:', e); } scheduleSync(); }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).substr(2, 9); }
 loadData();
 
@@ -883,8 +892,11 @@ function mergeArrays(cloudArr, localArr) {
 }
 
 function startSync() {
-  syncTimer = setInterval(syncToCloud, SYNC_INTERVAL);
+  // 定时拉取云端数据（合并别人添加的内容），推送由 scheduleSync 在数据变化时触发
+  syncTimer = setInterval(function() { loadFromCloud().then(function() { renderAll(); }); }, SYNC_INTERVAL);
   loadFromCloud().then(function() { renderAll(); });
+  // 首次加载完成后立即推送一次本地数据
+  setTimeout(function() { syncToCloud(); }, 4000);
 }
 
 function manualSync() {
@@ -1064,7 +1076,7 @@ function openAlbumModal(albumId) {
 function previewAlbumCover(input) {
   const file = input.files[0];
   if (!file) return;
-  compressImage(file, 800, 0.8, function(src) {
+  compressImage(file, 640, 0.72, function(src) {
     if (!src) return;
     albumCoverData = src;
     document.getElementById('albumCoverPreview').innerHTML = '<img src="' + src + '" style="width:100%;max-height:200px;object-fit:cover;border-radius:12px">';
@@ -1124,23 +1136,27 @@ function addAlbumItems(input) {
   const album = data.albums.find(function(a) { return a.id === currentAlbumId; });
   if (!album) return;
   let loaded = 0;
+  let pending = 0;
   files.forEach(function(file) {
+    pending++;
     if (file.type.startsWith('video/')) {
       const vReader = new FileReader();
       vReader.onload = function() {
         album.items.push({ id: uid(), type: 'video', src: vReader.result, comment1: '', comment2: '' });
         loaded++;
-        if (loaded === files.length) { saveData(); openAlbum(currentAlbumId); }
+        if (loaded === pending) { saveData(); openAlbum(currentAlbumId); }
       };
+      vReader.onerror = function() { loaded++; if (loaded === pending) { saveData(); openAlbum(currentAlbumId); } };
       vReader.readAsDataURL(file);
     } else {
-      compressImage(file, 1400, 0.82, function(src) {
-        album.items.push({ id: uid(), type: 'image', src: src, comment1: '', comment2: '' });
+      compressImage(file, 900, 0.75, function(src) {
+        if (src) album.items.push({ id: uid(), type: 'image', src: src, comment1: '', comment2: '' });
         loaded++;
-        if (loaded === files.length) { saveData(); openAlbum(currentAlbumId); }
+        if (loaded === pending) { saveData(); openAlbum(currentAlbumId); }
       });
     }
   });
+  if (pending === 0) return;
   input.value = '';
 }
 
@@ -1289,7 +1305,7 @@ function openMemoModal(memoId) {
 function previewMemoImage(input) {
   const file = input.files[0];
   if (!file) return;
-  compressImage(file, 1000, 0.8, function(src) {
+  compressImage(file, 800, 0.72, function(src) {
     if (!src) return;
     memoImageData = src;
     document.getElementById('memoImagePreview').innerHTML = '<img src="' + src + '" style="width:100%;max-height:180px;object-fit:cover;border-radius:12px">';
@@ -1342,7 +1358,7 @@ function openRecipeModal(recipeId) {
 function previewRecipeImage(input) {
   const file = input.files[0];
   if (!file) return;
-  compressImage(file, 1000, 0.8, function(src) {
+  compressImage(file, 800, 0.72, function(src) {
     if (!src) return;
     recipeImageData = src;
     document.getElementById('recipeImagePreview').innerHTML = '<img src="' + src + '" style="width:100%;max-height:180px;object-fit:cover;border-radius:12px">';

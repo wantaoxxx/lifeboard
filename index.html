@@ -1131,7 +1131,7 @@ function renderAlbumItems(items) {
   if (!items || items.length === 0) return '<div class="empty-state" style="padding:20px"><div class="empty-state-text">还没有内容，添加照片或视频吧</div></div>';
   return items.map(function(item, i) {
     return '<div class="card" style="position:relative" onclick="previewItem(' + i + ')">' +
-      (item.type === 'video' ? '<video class="card-thumb" src="' + item.src + '" muted></video>' : '<img class="card-thumb" src="' + item.src + '" alt="" loading="lazy">') +
+      (item.type === 'video' ? (item.poster ? '<img class="card-thumb" src="' + item.poster + '" alt="" loading="lazy">' : '<div class="card-thumb vid-placeholder">🎬</div>') : '<img class="card-thumb" src="' + item.src + '" alt="" loading="lazy">') +
       '<div class="card-body"><div class="card-title" style="font-size:0.74rem">' + (item.type === 'video' ? '🎬 视频' : '📷 照片') + '</div></div>' +
       '<button class="icon-btn" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.42);color:#fff;width:28px;height:28px;font-size:0.8rem" onclick="event.stopPropagation();removeAlbumItem(' + i + ')">✕</button></div>';
   }).join('');
@@ -1143,18 +1143,18 @@ async function addAlbumItems(input) {
   const album = data.albums.find(function(a) { return a.id === currentAlbumId; });
   if (!album) return;
   input.value = '';
-  showToast('正在添加 ' + files.length + ' 张…');
+  showToast('正在添加 ' + files.length + ' 个文件…');
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     await new Promise(function(resolve) {
-      if (file.type.startsWith('video/')) {
-        const vReader = new FileReader();
-        vReader.onload = function() {
-          album.items.push({ id: uid(), type: 'video', src: vReader.result, comment1: '', comment2: '' });
-          resolve();
-        };
-        vReader.onerror = function() { resolve(); };
-        vReader.readAsDataURL(file);
+      if (isVideoFile(file)) {
+        const id = uid();
+        idbPut(id, file).then(function() {
+          extractVideoPoster(file, function(poster) {
+            album.items.push({ id: id, type: 'video', src: 'idb:' + id, poster: poster || '', comment1: '', comment2: '' });
+            resolve();
+          });
+        }).catch(function() { resolve(); });
       } else {
         compressImage(file, 900, 0.75, function(src) {
           if (src) album.items.push({ id: uid(), type: 'image', src: src, comment1: '', comment2: '' });
@@ -1165,12 +1165,16 @@ async function addAlbumItems(input) {
   }
   saveData();
   openAlbum(currentAlbumId);
-  showToast('已添加 ' + files.length + ' 张 ✓');
+  showToast('已添加 ' + files.length + ' 个文件 ✓');
 }
 
 function removeAlbumItem(index) {
   const album = data.albums.find(function(a) { return a.id === currentAlbumId; });
   if (!album) return;
+  const item = album.items[index];
+  if (item && item.type === 'video' && item.src && item.src.indexOf('idb:') === 0) {
+    idbDelete(item.src.slice(4));
+  }
   album.items.splice(index, 1);
   saveData();
   openAlbum(currentAlbumId);
@@ -1217,7 +1221,7 @@ function renderDetailPreview(item, index) {
   if (!view) return;
   const src = item.src || item.image;
   const mediaHtml = item.type === 'video'
-    ? '<video class="detail-media" src="' + src + '" controls autoplay></video>'
+    ? '<video class="detail-media" poster="' + (item.poster || '') + '" controls playsinline></video>'
     : '<img class="detail-media" src="' + src + '" alt="">';
   view.innerHTML =
     '<div class="detail-head">' +
@@ -1238,6 +1242,12 @@ function renderDetailPreview(item, index) {
   overview.style.display = 'none';
   view.style.display = 'flex';
   view.scrollTop = 0;
+  if (item.type === 'video') {
+    resolveVideoSrc(item, function(url) {
+      const v = view.querySelector('video.detail-media');
+      if (v && url) { v.src = url; v.load(); }
+    });
+  }
 }
 
 function closeDetailPreview() {
@@ -1258,7 +1268,7 @@ function renderOverlayPreview(item, index) {
   overlay.onclick = function(e) { if (e.target === overlay) { savePreviewComments(); overlay.remove(); } };
 
   const mediaHtml = item.type === 'video'
-    ? '<video class="preview-media" src="' + src + '" controls autoplay></video>'
+    ? '<video class="preview-media" poster="' + (item.poster || '') + '" controls playsinline></video>'
     : '<img class="preview-media" src="' + src + '" alt="">';
 
   overlay.innerHTML =
@@ -1272,6 +1282,12 @@ function renderOverlayPreview(item, index) {
     '</div>';
 
   document.body.appendChild(overlay);
+  if (item.type === 'video') {
+    resolveVideoSrc(item, function(url) {
+      const v = overlay.querySelector('video.preview-media');
+      if (v && url) { v.src = url; v.load(); }
+    });
+  }
 }
 
 function navigatePreview(delta) {
@@ -1639,6 +1655,96 @@ function showToast(msg) {
 // ============================================================
 // 工具函数
 // ============================================================
+// ---------- IndexedDB 视频存储（视频文件大，不进 localStorage） ----------
+function idbOpen() {
+  return new Promise(function(resolve, reject) {
+    const req = indexedDB.open('lifeboard-media', 1);
+    req.onupgradeneeded = function() {
+      if (!req.result.objectStoreNames.contains('videos')) {
+        req.result.createObjectStore('videos');
+      }
+    };
+    req.onsuccess = function() { resolve(req.result); };
+    req.onerror = function() { reject(req.error); };
+  });
+}
+function idbPut(key, blob) {
+  return idbOpen().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      const tx = db.transaction('videos', 'readwrite');
+      tx.objectStore('videos').put(blob, key);
+      tx.oncomplete = function() { resolve(); };
+      tx.onerror = function() { reject(tx.error); };
+    });
+  });
+}
+function idbGet(key) {
+  return idbOpen().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      const tx = db.transaction('videos', 'readonly');
+      const req = tx.objectStore('videos').get(key);
+      req.onsuccess = function() { resolve(req.result); };
+      req.onerror = function() { reject(req.error); };
+    });
+  });
+}
+function idbDelete(key) {
+  return idbOpen().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      const tx = db.transaction('videos', 'readwrite');
+      tx.objectStore('videos').delete(key);
+      tx.oncomplete = function() { resolve(); };
+      tx.onerror = function() { reject(tx.error); };
+    });
+  });
+}
+function isVideoFile(file) {
+  if (file && file.type && file.type.indexOf('video/') === 0) return true;
+  return /\.(mp4|webm|mov|m4v|avi|mkv|3gp|mts|m2ts)$/i.test(file.name || '');
+}
+function extractVideoPoster(file, callback) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'metadata';
+  let done = false;
+  function finish(poster) {
+    if (done) return;
+    done = true;
+    URL.revokeObjectURL(url);
+    callback(poster);
+  }
+  video.onloadeddata = function() {
+    try { video.currentTime = Math.min(0.5, (video.duration || 0.5) / 4); } catch(e) {}
+  };
+  video.onseeked = function() {
+    try {
+      const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
+      const w = Math.max(1, Math.round(video.videoWidth * scale));
+      const h = Math.max(1, Math.round(video.videoHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+      finish(canvas.toDataURL('image/jpeg', 0.6));
+    } catch(e) { finish(''); }
+  };
+  video.onerror = function() { finish(''); };
+  video.src = url;
+}
+function resolveVideoSrc(item, callback) {
+  if (!item) { callback(''); return; }
+  if (item.type !== 'video') { callback(item.src || ''); return; }
+  const s = item.src || '';
+  if (s.indexOf('idb:') === 0) {
+    idbGet(s.slice(4)).then(function(blob) {
+      if (blob) callback(URL.createObjectURL(blob));
+      else callback('');
+    }).catch(function() { callback(''); });
+  } else {
+    callback(s);
+  }
+}
 function compressImage(file, maxDim, quality, callback) {
   const reader = new FileReader();
   reader.onload = function() {

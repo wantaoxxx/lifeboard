@@ -1279,22 +1279,26 @@ async function addAlbumItems(input) {
   updateProg();
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    await new Promise(function(resolve) {
-      if (isVideoFile(file)) {
-        const id = uid();
-        idbPut(id, file).then(function() {
-          extractVideoPoster(file, function(poster) {
-            album.items.push({ id: id, type: 'video', src: 'idb:' + id, poster: poster || '', comment1: '', comment2: '' });
+    // 每个文件最多 5 秒，超时跳过，保证队列必前进
+    await Promise.race([
+      new Promise(function(resolve) {
+        if (isVideoFile(file)) {
+          const id = uid();
+          idbPut(id, file).then(function() {
+            extractVideoPoster(file, function(poster) {
+              album.items.push({ id: id, type: 'video', src: 'idb:' + id, poster: poster || '', comment1: '', comment2: '' });
+              done++; updateProg(); resolve();
+            });
+          }).catch(function() { done++; updateProg(); resolve(); });
+        } else {
+          compressImage(file, 1080, 0.78, function(src) {
+            if (src) album.items.push({ id: uid(), type: 'image', src: src, comment1: '', comment2: '' });
             done++; updateProg(); resolve();
           });
-        }).catch(function() { done++; updateProg(); resolve(); });
-      } else {
-        compressImage(file, 1080, 0.78, function(src) {
-          if (src) album.items.push({ id: uid(), type: 'image', src: src, comment1: '', comment2: '' });
-          done++; updateProg(); resolve();
-        });
-      }
-    });
+        }
+      }),
+      new Promise(function(resolve) { setTimeout(function() { done++; updateProg(); resolve(); }, 5000); })
+    ]);
   }
   saveData();
   refreshAlbumGrid(album);
@@ -1837,7 +1841,8 @@ function isVideoFile(file) {
   return /\.(mp4|webm|mov|m4v|avi|mkv|3gp|mts|m2ts)$/i.test(file.name || '');
 }
 function extractVideoPoster(file, callback) {
-  const url = URL.createObjectURL(file);
+  let url = null;
+  try { url = URL.createObjectURL(file); } catch(e) {}
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;
@@ -1846,17 +1851,28 @@ function extractVideoPoster(file, callback) {
   function finish(poster) {
     if (done) return;
     done = true;
-    URL.revokeObjectURL(url);
+    clearTimeout(timer);
+    try { if (url) URL.revokeObjectURL(url); } catch(e) {}
     callback(poster);
   }
-  video.onloadeddata = function() {
-    try { video.currentTime = Math.min(0.5, (video.duration || 0.5) / 4); } catch(e) {}
-  };
+  function trySeek() {
+    try {
+      if (typeof video.duration === 'number' && video.duration > 0) {
+        video.currentTime = Math.min(0.3, video.duration / 4);
+      }
+    } catch(e) { finish(''); }
+  }
+  // 超时保护：1.5 秒拿不到封面就用空封面，绝不卡死
+  const timer = setTimeout(function() { finish(''); }, 1500);
+  video.onloadedmetadata = function() { trySeek(); };
+  video.onloadeddata = function() { trySeek(); };
   video.onseeked = function() {
     try {
-      const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
-      const w = Math.max(1, Math.round(video.videoWidth * scale));
-      const h = Math.max(1, Math.round(video.videoHeight * scale));
+      const w0 = video.videoWidth || 0, h0 = video.videoHeight || 0;
+      if (!w0 || !h0) { finish(''); return; }
+      const scale = Math.min(1, 640 / Math.max(w0, h0));
+      const w = Math.max(1, Math.round(w0 * scale));
+      const h = Math.max(1, Math.round(h0 * scale));
       const canvas = document.createElement('canvas');
       canvas.width = w; canvas.height = h;
       canvas.getContext('2d').drawImage(video, 0, 0, w, h);
@@ -1864,7 +1880,7 @@ function extractVideoPoster(file, callback) {
     } catch(e) { finish(''); }
   };
   video.onerror = function() { finish(''); };
-  video.src = url;
+  if (url) video.src = url;
 }
 function resolveVideoSrc(item, callback) {
   if (!item) { callback(''); return; }
@@ -1880,27 +1896,37 @@ function resolveVideoSrc(item, callback) {
   }
 }
 function compressImage(file, maxDim, quality, callback) {
-  // 优先用 createImageBitmap 直接降采样解码（iOS 15+，内存友好，48MP 大图也不爆）
-  if (window.createImageBitmap) {
-    createImageBitmap(file).then(function(full) {
-      const scale = Math.min(1, maxDim / Math.max(full.width, full.height));
-      const w = Math.max(1, Math.round(full.width * scale));
-      const h = Math.max(1, Math.round(full.height * scale));
-      full.close();
-      return createImageBitmap(file, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' });
-    }).then(function(bmp) {
-      const canvas = document.createElement('canvas');
-      canvas.width = bmp.width; canvas.height = bmp.height;
-      canvas.getContext('2d').drawImage(bmp, 0, 0);
-      bmp.close();
-      callback(canvas.toDataURL('image/jpeg', quality));
-    }).catch(function() { compressImageFallback(file, maxDim, quality, callback); });
-  } else {
-    compressImageFallback(file, maxDim, quality, callback);
-  }
-}
-
-function compressImageFallback(file, maxDim, quality, callback) {
+  // 用 Image 轻量读取原始尺寸（不完整解码位图），再 createImageBitmap 一次性降采样
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  let settled = false;
+  function fail() { try { URL.revokeObjectURL(url); } catch(e) {} if (!settled) { settled = true; compressImageFallback(file, maxDim, quality, callback); } }
+  img.onload = function() {
+    try {
+      const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.max(1, Math.round(img.naturalWidth * scale));
+      const h = Math.max(1, Math.round(img.naturalHeight * scale));
+      try { URL.revokeObjectURL(url); } catch(e) {}
+      if (window.createImageBitmap) {
+        createImageBitmap(file, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' }).then(function(bmp) {
+          const canvas = document.createElement('canvas');
+          canvas.width = bmp.width; canvas.height = bmp.height;
+          canvas.getContext('2d').drawImage(bmp, 0, 0);
+          bmp.close();
+          if (!settled) { settled = true; callback(canvas.toDataURL('image/jpeg', quality)); }
+        }).catch(function() { fail(); });
+      } else {
+        // 老浏览器：Image 已拿到尺寸，直接画小 canvas
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        if (!settled) { settled = true; callback(canvas.toDataURL('image/jpeg', quality)); }
+      }
+    } catch(e) { fail(); }
+  };
+  img.onerror = function() { fail(); };
+  img.src = url;
+}function compressImageFallback(file, maxDim, quality, callback) {
   const reader = new FileReader();
   reader.onload = function() {
     const img = new Image();
@@ -1920,7 +1946,6 @@ function compressImageFallback(file, maxDim, quality, callback) {
   };
   reader.readAsDataURL(file);
 }
-
 function escHtml(s) {
   if (!s) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');

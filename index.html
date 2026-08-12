@@ -401,6 +401,11 @@ a { color: var(--accent); text-decoration: none; }
   /* 移动端菜单降级：关闭 backdrop-filter 消除卡顿 */
   .context-menu { top: 58px; right: 10px; backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--panel-strong); }
   .context-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; }
+
+  /* 移动端性能：关闭大模糊背景动画 + 顶部毛玻璃降级为纯色 */
+  #ambient { display: none; }
+  .seg-control { background: var(--panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .floating-nav { backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 
 /* ---------- 底部悬浮导航 ---------- */
@@ -505,15 +510,16 @@ a { color: var(--accent); text-decoration: none; }
 .preview-nav.prev { left: 14px; }
 .preview-nav.next { right: 14px; }
 
-/* 上下文菜单 */
-.context-overlay { position: fixed; inset: 0; z-index: 250; background: rgba(0,0,0,0.2); animation: fadeIn 0.18s ease-out forwards; }
+/* 上下文菜单（无 backdrop-filter，避免弹出时全屏模糊合成卡顿） */
+.context-overlay { position: fixed; inset: 0; z-index: 250; background: rgba(0,0,0,0.2); animation: fadeIn 0.15s ease-out forwards; }
 .context-menu {
   position: fixed; top: 64px; right: 16px; z-index: 251;
-  background: var(--panel-strong); backdrop-filter: var(--blur-soft); -webkit-backdrop-filter: var(--blur-soft);
+  background: var(--panel-strong);
   border: 1px solid var(--sep); border-radius: var(--r); box-shadow: var(--shadow-float);
-  padding: 8px; min-width: 216px; transform-origin: top right; animation: menuIn 0.22s cubic-bezier(0.4,0,0.2,1) forwards;
+  padding: 8px; min-width: 216px;
+  animation: menuFade 0.15s ease-out forwards;
 }
-@keyframes menuIn { from { opacity: 0; transform: scale(0.92) translateY(-8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes menuFade { from { opacity: 0; } to { opacity: 1; } }
 .context-item { display: flex; align-items: center; gap: 11px; width: 100%; padding: 12px 14px; border-radius: var(--r-sm); font-size: 0.9rem; font-weight: 550; color: var(--text); transition: background var(--t-fast); text-align: left; }
 .context-item:hover { background: rgba(var(--accent-rgb),0.08); }
 .context-item:active { background: rgba(var(--accent-rgb),0.14); }
@@ -1131,33 +1137,35 @@ function renderAlbumItems(items) {
   }).join('');
 }
 
-function addAlbumItems(input) {
+async function addAlbumItems(input) {
   const files = Array.from(input.files);
+  if (files.length === 0) return;
   const album = data.albums.find(function(a) { return a.id === currentAlbumId; });
   if (!album) return;
-  let loaded = 0;
-  let pending = 0;
-  files.forEach(function(file) {
-    pending++;
-    if (file.type.startsWith('video/')) {
-      const vReader = new FileReader();
-      vReader.onload = function() {
-        album.items.push({ id: uid(), type: 'video', src: vReader.result, comment1: '', comment2: '' });
-        loaded++;
-        if (loaded === pending) { saveData(); openAlbum(currentAlbumId); }
-      };
-      vReader.onerror = function() { loaded++; if (loaded === pending) { saveData(); openAlbum(currentAlbumId); } };
-      vReader.readAsDataURL(file);
-    } else {
-      compressImage(file, 900, 0.75, function(src) {
-        if (src) album.items.push({ id: uid(), type: 'image', src: src, comment1: '', comment2: '' });
-        loaded++;
-        if (loaded === pending) { saveData(); openAlbum(currentAlbumId); }
-      });
-    }
-  });
-  if (pending === 0) return;
   input.value = '';
+  showToast('正在添加 ' + files.length + ' 张…');
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    await new Promise(function(resolve) {
+      if (file.type.startsWith('video/')) {
+        const vReader = new FileReader();
+        vReader.onload = function() {
+          album.items.push({ id: uid(), type: 'video', src: vReader.result, comment1: '', comment2: '' });
+          resolve();
+        };
+        vReader.onerror = function() { resolve(); };
+        vReader.readAsDataURL(file);
+      } else {
+        compressImage(file, 900, 0.75, function(src) {
+          if (src) album.items.push({ id: uid(), type: 'image', src: src, comment1: '', comment2: '' });
+          resolve();
+        });
+      }
+    });
+  }
+  saveData();
+  openAlbum(currentAlbumId);
+  showToast('已添加 ' + files.length + ' 张 ✓');
 }
 
 function removeAlbumItem(index) {

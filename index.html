@@ -1013,25 +1013,33 @@ async function syncToCloud() {
 async function loadFromCloud() {
   try {
     const url = 'https://api.github.com/repos/' + SYNC_OWNER + '/' + SYNC_REPO + '/contents/' + SYNC_FILE + '?ref=main';
-    const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Accept': 'application/vnd.github+json' } });
-    if (resp.status === 404) return false;
-    if (!resp.ok) return false;
-    const result = await resp.json();
+    const metaResp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Accept': 'application/vnd.github+json' } });
+    if (metaResp.status === 404) return false;
+    if (!metaResp.ok) return false;
+    const meta = await metaResp.json();
     // 云端 sha 与本地一致 -> 无新内容，跳过合并
-    if (result.sha && result.sha === cloudSha) return true;
-    cloudSha = result.sha;
+    if (meta.sha && meta.sha === cloudSha) return true;
+    cloudSha = meta.sha;
     if (cloudSha) localStorage.setItem(CLOUD_SHA_KEY, cloudSha);
-    if (result.content) {
-      const cloudData = JSON.parse(base64ToUtf8(result.content));
-      data = {
-        albums: mergeArrays(cloudData.albums || [], data.albums),
-        memos: mergeArrays(cloudData.memos || [], data.memos),
-        recipes: mergeArrays(cloudData.recipes || [], data.recipes),
-        guestbook: mergeArrays(cloudData.guestbook || [], data.guestbook)
-      };
-      saveData(true);
-      return true;
+
+    // 获取文件内容：<=1MB 用 content(base64)，>1MB 时 content 为 null，需用 raw 接口
+    let text = null;
+    if (meta.content) {
+      text = base64ToUtf8(meta.content);
+    } else {
+      const rawResp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + GITHUB_TOKEN, 'Accept': 'application/vnd.github.v3.raw' } });
+      if (rawResp.ok) text = await rawResp.text();
     }
+    if (!text) return true;
+
+    const cloudData = JSON.parse(text);
+    data = {
+      albums: mergeArrays(cloudData.albums || [], data.albums),
+      memos: mergeArrays(cloudData.memos || [], data.memos),
+      recipes: mergeArrays(cloudData.recipes || [], data.recipes),
+      guestbook: mergeArrays(cloudData.guestbook || [], data.guestbook)
+    };
+    saveData(true);
     return true;
   } catch(e) { console.error('Load from cloud error:', e); return false; }
 }

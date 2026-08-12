@@ -397,6 +397,10 @@ a { color: var(--accent); text-decoration: none; }
   .grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
   .card-edit-btn { opacity: 1; transform: scale(1); }
   .section-title { font-size: 1.1rem; }
+
+  /* 移动端菜单降级：关闭 backdrop-filter 消除卡顿 */
+  .context-menu { top: 58px; right: 10px; backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--panel-strong); }
+  .context-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 
 /* ---------- 底部悬浮导航 ---------- */
@@ -502,13 +506,14 @@ a { color: var(--accent); text-decoration: none; }
 .preview-nav.next { right: 14px; }
 
 /* 上下文菜单 */
-.context-overlay { position: fixed; inset: 0; z-index: 250; background: rgba(0,0,0,0.2); animation: fadeIn 0.2s ease-out forwards; }
+.context-overlay { position: fixed; inset: 0; z-index: 250; background: rgba(0,0,0,0.2); animation: fadeIn 0.18s ease-out forwards; }
 .context-menu {
   position: fixed; top: 64px; right: 16px; z-index: 251;
-  background: var(--panel-strong); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  background: var(--panel-strong); backdrop-filter: var(--blur-soft); -webkit-backdrop-filter: var(--blur-soft);
   border: 1px solid var(--sep); border-radius: var(--r); box-shadow: var(--shadow-float);
-  padding: 8px; min-width: 216px; transform-origin: top right; animation: modalIn var(--t-spring) forwards;
+  padding: 8px; min-width: 216px; transform-origin: top right; animation: menuIn 0.22s cubic-bezier(0.4,0,0.2,1) forwards;
 }
+@keyframes menuIn { from { opacity: 0; transform: scale(0.92) translateY(-8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 .context-item { display: flex; align-items: center; gap: 11px; width: 100%; padding: 12px 14px; border-radius: var(--r-sm); font-size: 0.9rem; font-weight: 550; color: var(--text); transition: background var(--t-fast); text-align: left; }
 .context-item:hover { background: rgba(var(--accent-rgb),0.08); }
 .context-item:active { background: rgba(var(--accent-rgb),0.14); }
@@ -742,6 +747,7 @@ a { color: var(--accent); text-decoration: none; }
   <button class="context-item" onclick="toggleSelectMode()"><span>☑️</span><span id="selectLabel">多选</span></button>
   <button class="context-item" onclick="openGuestbookModal()"><span>💬</span>留言</button>
   <button class="context-item" onclick="viewGuestbook()"><span>📋</span>留言板</button>
+  <button class="context-item" onclick="openTokenModal()"><span>🔑</span>同步设置</button>
   <div class="context-divider"></div>
   <button class="context-item" onclick="backupData()"><span>💾</span>备份到本地</button>
   <button class="context-item" onclick="triggerImport()"><span>📥</span>导入备份</button>

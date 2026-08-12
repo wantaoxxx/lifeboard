@@ -2,12 +2,5 @@
   "albums": [],
   "memos": [],
   "recipes": [],
-  "guestbook": [
-    {
-      "id": "msqdjzvly63p9jeud",
-      "user": "大胖小子",
-      "message": "我好想你",
-      "timestamp": "2026-08-12T17:40:04.065Z"
-    }
-  ]
+  "guestbook": []
 }
